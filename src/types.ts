@@ -36,6 +36,7 @@ export interface Scene {
   dayNight: string
   storyTime: string
   pageLength: number
+  shootDay: number
   characterIds: string[]
   propIds: string[]
   costumes: Record<string, string>
@@ -52,6 +53,14 @@ export interface Script {
   characters: Character[]
   props: Prop[]
   wardrobes: Wardrobe[]
+}
+
+export interface CallSheetDay {
+  day: number
+  scenes: Scene[]
+  locations: string[]
+  dayNights: string[]
+  totalPages: number
 }
 
 export interface WarningItem {

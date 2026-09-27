@@ -1,22 +1,58 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { sampleScript } from './sample'
-import type { Character, ContinuityState, DiffItem, Prop, Reply, Scene, Script, Version, Wardrobe, WarningItem, WarningReview } from './types'
+import type { CallSheetDay, Character, ContinuityState, DiffItem, Prop, Reply, Scene, Script, Version, Wardrobe, WarningItem, WarningReview } from './types'
 
 const STORAGE_KEY = 'sologsb-1017-continuity-v1'
 const clone = <T,>(value: T): T => structuredClone(value)
 const id = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+
+function normalizeShootDays(script: Script) {
+  script.scenes.forEach((scene) => {
+    if (!Number.isFinite(scene.shootDay) || scene.shootDay < 1) {
+      const storyDay = Number(scene.storyTime?.match(/第\s*(\d+)\s*天/)?.[1])
+      scene.shootDay = Number.isFinite(storyDay) && storyDay >= 1 ? storyDay : 1
+    } else {
+      scene.shootDay = Math.round(scene.shootDay)
+    }
+  })
+}
 
 function initialState(): ContinuityState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as ContinuityState
-      if (parsed.script?.scenes?.length) return parsed
+      if (parsed.script?.scenes?.length) {
+        normalizeShootDays(parsed.script)
+        return parsed
+      }
     }
   } catch {
     // Ignore an invalid local draft and restore the bundled example.
   }
   return { script: clone(sampleScript), reviews: {}, versions: [], updatedAt: new Date().toISOString() }
+}
+
+export function buildCallSheet(scenes: Scene[]): CallSheetDay[] {
+  const byDay = new Map<number, Scene[]>()
+  scenes.forEach((scene) => {
+    const day = Number.isFinite(scene.shootDay) && scene.shootDay >= 1 ? Math.round(scene.shootDay) : 1
+    const list = byDay.get(day)
+    if (list) list.push(scene)
+    else byDay.set(day, [scene])
+  })
+  return [...byDay.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([day, dayScenes]) => {
+      const ordered = [...dayScenes].sort((a, b) => a.number.localeCompare(b.number, 'zh-Hans-CN', { numeric: true }))
+      return {
+        day,
+        scenes: ordered,
+        locations: [...new Set(ordered.map((scene) => scene.location))],
+        dayNights: [...new Set(ordered.map((scene) => scene.dayNight))],
+        totalPages: ordered.reduce((total, scene) => total + scene.pageLength, 0)
+      }
+    })
 }
 
 export function deriveWarnings(script: Script): WarningItem[] {
@@ -108,6 +144,7 @@ export function diffScript(base: Script, current: Script): DiffItem[] {
     { key: 'dayNight', label: '日夜' },
     { key: 'storyTime', label: '故事时间' },
     { key: 'pageLength', label: '页数' },
+    { key: 'shootDay', label: '拍摄日' },
     { key: 'revision', label: '修订色' },
     { key: 'status', label: '状态' },
     { key: 'reason', label: '修改理由' }
@@ -224,8 +261,9 @@ export function useContinuityStore() {
     const sceneId = id('scene')
     mutate((script) => {
       const number = String(script.scenes.length + 1)
+      const lastDay = script.scenes.reduce((max, scene) => Math.max(max, scene.shootDay || 1), 1)
       script.scenes.push({
-        id: sceneId, number, slug: '未命名场景', synopsis: '', intExt: 'INT', location: '待填写', dayNight: '白天', storyTime: `第 1 天`, pageLength: 1,
+        id: sceneId, number, slug: '未命名场景', synopsis: '', intExt: 'INT', location: '待填写', dayNight: '白天', storyTime: `第 1 天`, pageLength: 1, shootDay: lastDay,
         characterIds: [], propIds: [], costumes: {}, revision: 'white', status: 'draft', reason: ''
       })
     })
@@ -315,7 +353,10 @@ export function useContinuityStore() {
   const restoreVersion = useCallback((versionId: string) => {
     const version = state.versions.find((item) => item.id === versionId)
     if (!version) return
-    mutate((script) => { Object.assign(script, clone(version.script)) })
+    mutate((script) => {
+      Object.assign(script, clone(version.script))
+      normalizeShootDays(script)
+    })
   }, [mutate, state.versions])
 
   const reset = useCallback(() => {

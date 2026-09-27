@@ -45,7 +45,7 @@ import {
   Undo,
   WarningAmber
 } from '@mui/icons-material'
-import { diffScript, useContinuityStore } from './store'
+import { buildCallSheet, diffScript, useContinuityStore } from './store'
 import type { RevisionColor, Scene, WarningItem, WarningStatus } from './types'
 
 const revisionOptions: Array<{ value: RevisionColor; label: string; color: string }> = [
@@ -93,6 +93,7 @@ function SceneCard({ scene, query, active, onOpen }: { scene: Scene; query: stri
         <Typography className="outline-synopsis"><Highlight text={scene.synopsis || '尚未填写场景摘要。'} query={query} /></Typography>
         <Stack direction="row" gap={2} flexWrap="wrap" className="outline-meta">
           <span>{scene.storyTime}</span>
+          <span>拍摄第 {scene.shootDay} 天</span>
           <span>{scene.pageLength.toFixed(2)} 页</span>
           <span>{scene.characterIds.length} 个角色</span>
           <span>{scene.propIds.length} 个道具</span>
@@ -106,7 +107,7 @@ export default function App() {
   const store = useContinuityStore()
   const { state, warnings } = store
   const [selectedSceneId, setSelectedSceneId] = useState(state.script.scenes[0]?.id ?? '')
-  const [view, setView] = useState<'outline' | 'detail' | 'warnings' | 'versions'>('outline')
+  const [view, setView] = useState<'outline' | 'detail' | 'callsheet' | 'warnings' | 'versions'>('outline')
   const [query, setQuery] = useState('')
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [libraryTab, setLibraryTab] = useState('characters')
@@ -122,6 +123,7 @@ export default function App() {
   const pendingWarnings = warnings.filter((warning) => (state.reviews[warning.id]?.status ?? 'pending') === 'pending')
   const visibleWarnings = warnings.filter((warning) => warningFilter === 'all' || (state.reviews[warning.id]?.status ?? 'pending') === warningFilter)
   const selectedVersion = state.versions.find((version) => version.id === selectedVersionId) ?? state.versions[0]
+  const callSheet = useMemo(() => buildCallSheet(state.script.scenes), [state.script.scenes])
   const diff = useMemo(() => selectedVersion ? diffScript(selectedVersion.script, state.script) : [], [selectedVersion, state.script])
   const searchResults = useMemo(() => {
     const normalized = query.trim().toLowerCase()
@@ -252,6 +254,7 @@ export default function App() {
             </TextField>
             <TextField label="故事时间" value={selectedScene.storyTime} disabled={locked} onChange={(event) => store.updateScene(selectedScene.id, 'storyTime', event.target.value)} />
             <TextField type="number" label="页数" value={selectedScene.pageLength} disabled={locked} inputProps={{ step: 0.25, min: 0 }} onChange={(event) => store.updateScene(selectedScene.id, 'pageLength', Number(event.target.value))} />
+            <TextField type="number" label="拍摄日" value={selectedScene.shootDay} disabled={locked} inputProps={{ step: 1, min: 1 }} onChange={(event) => store.updateScene(selectedScene.id, 'shootDay', Math.max(1, Math.round(Number(event.target.value) || 1)))} />
             <TextField select label="场次状态" value={selectedScene.status} disabled={locked} onChange={(event) => store.updateScene(selectedScene.id, 'status', event.target.value as Scene['status'])}>
               <MenuItem value="draft">草稿</MenuItem>
               <MenuItem value="review">待审</MenuItem>
@@ -321,6 +324,79 @@ export default function App() {
             </Box>
           )}
         </Paper>
+      </Box>
+    )
+  }
+
+  function renderCallSheet() {
+    const maxDay = callSheet.length ? callSheet[callSheet.length - 1].day : 1
+    const dayOptions = [...callSheet.map((day) => day.day), maxDay + 1]
+    const totalScenes = callSheet.reduce((total, day) => total + day.scenes.length, 0)
+    const totalPages = callSheet.reduce((total, day) => total + day.totalPages, 0)
+    return (
+      <Box>
+        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2} mb={2} alignItems={{ sm: 'flex-end' }}>
+          <Box>
+            <Typography className="eyebrow">SHOOTING SCHEDULE</Typography>
+            <Typography variant="h4">拍摄通告单</Typography>
+            <Typography color="text.secondary">按拍摄日分组，每天场次按场号排序；改场次、页数或删除场次后自动重算。</Typography>
+          </Box>
+          <Stack direction="row" gap={1} flexWrap="wrap">
+            <Chip label={`共 ${callSheet.length} 个拍摄日`} />
+            <Chip label={`${totalScenes} 场`} variant="outlined" />
+            <Chip label={`合计 ${totalPages.toFixed(2)} 页`} variant="outlined" />
+          </Stack>
+        </Stack>
+        <Stack gap={2}>
+          {callSheet.map((day) => (
+            <Paper className="callsheet-day" elevation={0} key={day.day}>
+              <Box className="callsheet-day-head">
+                <Box className="callsheet-day-badge">第 {day.day} 天</Box>
+                <Stack direction="row" gap={1} flexWrap="wrap" flex={1}>
+                  <Chip size="small" label={`地点：${day.locations.join('、')}`} />
+                  <Chip size="small" variant="outlined" label={`日夜：${day.dayNights.join('、')}`} />
+                  <Chip size="small" variant="outlined" label={`${day.scenes.length} 场`} />
+                  <Chip size="small" color={day.totalPages > 8 ? 'error' : 'default'} variant={day.totalPages > 8 ? 'filled' : 'outlined'} label={`合计 ${day.totalPages.toFixed(2)} 页`} />
+                </Stack>
+              </Box>
+              {(day.locations.length > 1 || day.totalPages > 8) && (
+                <Box className="callsheet-alerts">
+                  {day.locations.length > 1 && (
+                    <Alert severity="warning" icon={<WarningAmber />}>当天需转场：{day.locations.join(' → ')}，请预留转场与布光时间。</Alert>
+                  )}
+                  {day.totalPages > 8 && (
+                    <Alert severity="error">当天合计 {day.totalPages.toFixed(2)} 页，超过 8 页，一天预计拍不完，请拆分到多个拍摄日。</Alert>
+                  )}
+                </Box>
+              )}
+              <Box className="callsheet-rows">
+                <Box className="callsheet-row head">
+                  <span>场号</span><span>场名</span><span>地点</span><span>日夜</span><span>页数</span><span>拍摄日</span>
+                </Box>
+                {day.scenes.map((scene) => (
+                  <Box className="callsheet-row" key={scene.id}>
+                    <button className="callsheet-number" onClick={() => openScene(scene.id)} title="打开场景详情">{scene.number}</button>
+                    <span className="callsheet-slug">{scene.slug}</span>
+                    <span>{scene.intExt}. {scene.location}</span>
+                    <span>{scene.dayNight}</span>
+                    <span>{scene.pageLength.toFixed(2)}</span>
+                    <TextField
+                      select
+                      size="small"
+                      value={String(scene.shootDay)}
+                      disabled={scene.status === 'locked'}
+                      onChange={(event) => store.updateScene(scene.id, 'shootDay', Number(event.target.value))}
+                    >
+                      {dayOptions.map((option) => (
+                        <MenuItem key={option} value={String(option)}>{option === maxDay + 1 ? `第 ${option} 天（新的一天）` : `第 ${option} 天`}</MenuItem>
+                      ))}
+                    </TextField>
+                  </Box>
+                ))}
+              </Box>
+            </Paper>
+          ))}
+        </Stack>
       </Box>
     )
   }
@@ -500,6 +576,7 @@ export default function App() {
       <Box className="status-strip">
         <span>{store.saveStatus === 'saved' ? '● 已保存到本机' : '◌ 正在保存'}</span>
         <span>{state.script.scenes.length} 场 / {state.script.scenes.reduce((total, scene) => total + scene.pageLength, 0).toFixed(2)} 页</span>
+        <span>{callSheet.length} 个拍摄日</span>
         <span className={pendingWarnings.length ? 'attention' : ''}>{pendingWarnings.length} 条问题待审</span>
         <span>所有修改自动保存在浏览器本地</span>
       </Box>
@@ -525,6 +602,7 @@ export default function App() {
       <Tabs value={view} onChange={(_, value) => setView(value)} variant="scrollable" className="view-tabs">
         <Tab value="outline" label="大纲视图" />
         <Tab value="detail" label="场景详情" />
+        <Tab value="callsheet" label="通告单" />
         <Tab value="warnings" label={<Badge badgeContent={pendingWarnings.length} color="warning"><span className="tab-label">警告审阅</span></Badge>} />
         <Tab value="versions" label={<Badge badgeContent={state.versions.length} color="secondary"><span className="tab-label">版本差异</span></Badge>} />
       </Tabs>
@@ -549,6 +627,7 @@ export default function App() {
         )}
         {view === 'outline' && renderOutline()}
         {view === 'detail' && renderSceneDetail()}
+        {view === 'callsheet' && renderCallSheet()}
         {view === 'warnings' && renderWarnings()}
         {view === 'versions' && renderVersions()}
       </Box>
