@@ -42,10 +42,11 @@ import {
   Reply,
   Save,
   Search,
+  SyncAlt,
   Undo,
   WarningAmber
 } from '@mui/icons-material'
-import { diffScript, useContinuityStore } from './store'
+import { buildSchedule, diffScript, useContinuityStore } from './store'
 import type { RevisionColor, Scene, WarningItem, WarningStatus } from './types'
 
 const revisionOptions: Array<{ value: RevisionColor; label: string; color: string }> = [
@@ -87,6 +88,7 @@ function SceneCard({ scene, query, active, onOpen }: { scene: Scene; query: stri
           <Typography variant="h6"><Highlight text={scene.slug} query={query} /></Typography>
           <Chip size="small" label={`${scene.intExt}. ${scene.location}`} />
           <Chip size="small" label={scene.dayNight} variant="outlined" />
+          <Chip size="small" color="primary" label={`第 ${scene.shootDay} 拍摄日`} />
           <Chip size="small" label={scene.status === 'locked' ? '锁定' : scene.status === 'review' ? '待审' : '草稿'} color={scene.status === 'review' ? 'warning' : 'default'} />
           <span className={`revision-dot revision-${scene.revision}`} title={`修订色：${scene.revision}`} />
         </Stack>
@@ -106,7 +108,7 @@ export default function App() {
   const store = useContinuityStore()
   const { state, warnings } = store
   const [selectedSceneId, setSelectedSceneId] = useState(state.script.scenes[0]?.id ?? '')
-  const [view, setView] = useState<'outline' | 'detail' | 'warnings' | 'versions'>('outline')
+  const [view, setView] = useState<'outline' | 'schedule' | 'detail' | 'warnings' | 'versions'>('outline')
   const [query, setQuery] = useState('')
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [libraryTab, setLibraryTab] = useState('characters')
@@ -131,6 +133,13 @@ export default function App() {
       return value.toLowerCase().includes(normalized) ? [{ scene, field, value }] : []
     }))
   }, [query, state.script.scenes])
+
+  const schedule = useMemo(() => buildSchedule(state.script), [state.script])
+  const totalPages = useMemo(() => state.script.scenes.reduce((total, scene) => total + scene.pageLength, 0), [state.script.scenes])
+  const scheduleDayOptions = useMemo(() => {
+    const maxDay = schedule.reduce((max, item) => Math.max(max, item.day), 0)
+    return Array.from({ length: maxDay + 1 }, (_, index) => index + 1)
+  }, [schedule])
 
   useEffect(() => {
     if (!state.script.scenes.some((scene) => scene.id === selectedSceneId)) setSelectedSceneId(state.script.scenes[0]?.id ?? '')
@@ -202,6 +211,84 @@ export default function App() {
     )
   }
 
+  function renderSchedule() {
+    return (
+      <Box>
+        <Stack direction="row" justifyContent="space-between" alignItems="flex-end" mb={2}>
+          <Box>
+            <Typography className="eyebrow">CALL SHEET</Typography>
+            <Typography variant="h4">通告单</Typography>
+            <Typography color="text.secondary">按拍摄日排期；同天多地点提示转场，合计超过 8 页提示当天拍不完。</Typography>
+          </Box>
+          <Button variant="contained" startIcon={<Add />} onClick={() => { const sceneId = store.addScene(); setSelectedSceneId(sceneId); setView('detail') }}>新增场景</Button>
+        </Stack>
+        <Stack direction={{ xs: 'column', sm: 'row' }} gap={2} mb={2}>
+          <Paper className="schedule-summary" elevation={0}><strong>{schedule.length}</strong><span>个拍摄日</span></Paper>
+          <Paper className="schedule-summary" elevation={0}><strong>{state.script.scenes.length}</strong><span>场</span></Paper>
+          <Paper className="schedule-summary" elevation={0}><strong>{totalPages.toFixed(2)}</strong><span>页合计</span></Paper>
+          <Paper className={`schedule-summary warn ${schedule.some((day) => day.locationChange || day.overPages) ? '' : 'quiet'}`} elevation={0}>
+            <strong>{schedule.filter((day) => day.locationChange || day.overPages).length}</strong>
+            <span>天排期有提示</span>
+          </Paper>
+        </Stack>
+        <Stack gap={2}>
+          {schedule.map((day) => (
+            <Paper key={day.day} className={`schedule-day ${day.overPages ? 'over' : ''}`} elevation={0}>
+              <Box className="schedule-day-head">
+                <Box className="schedule-day-label">第 {day.day} 拍摄日</Box>
+                <Box className="schedule-day-stats">
+                  <span>{day.sceneCount} 场</span>
+                  <span className={day.overPages ? 'over-text' : ''}>{day.totalPages.toFixed(2)} / 8 页</span>
+                  <span>{day.locations.length} 个地点</span>
+                </Box>
+              </Box>
+              <Stack direction="row" gap={1} flexWrap="wrap" className="schedule-day-tags">
+                {day.locations.map((location) => <Chip key={location} size="small" label={location} variant="outlined" />)}
+                {day.dayNights.map((period) => <Chip key={period} size="small" label={period} color="secondary" variant="outlined" />)}
+              </Stack>
+              {day.locationChange && (
+                <Alert severity="warning" className="schedule-alert" icon={<SyncAlt />}>
+                  当天要转场：{day.locations.join(' → ')}（{day.locations.length} 个地点），请预留转场时间。
+                </Alert>
+              )}
+              {day.overPages && (
+                <Alert severity="error" className="schedule-alert">
+                  当天合计 {day.totalPages.toFixed(2)} 页，超过 8 页上限，预计拍不完，建议拆分到其他拍摄日。
+                </Alert>
+              )}
+              <Box className="schedule-scene-list">
+                {day.scenes.map((scene) => (
+                  <div key={scene.id} className="schedule-scene-row" role="button" tabIndex={0} onClick={() => openScene(scene.id)} onKeyDown={(event) => { if (event.key === 'Enter') openScene(scene.id) }}>
+                    <Box className="scene-number small">{scene.number}</Box>
+                    <Box className="schedule-scene-copy">
+                      <strong>{scene.slug}</strong>
+                      <span>
+                        {scene.intExt}. {scene.location} · {scene.dayNight} · {scene.pageLength.toFixed(2)} 页
+                      </span>
+                    </Box>
+                    <TextField
+                      select
+                      size="small"
+                      label="拍摄日"
+                      value={scene.shootDay}
+                      disabled={scene.status === 'locked'}
+                      className="schedule-day-select"
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => store.setShootDay(scene.id, Number(event.target.value))}
+                    >
+                      {scheduleDayOptions.map((value) => <MenuItem key={value} value={value}>第 {value} 天{value === scheduleDayOptions.length ? '（新开一天）' : ''}</MenuItem>)}
+                    </TextField>
+                  </div>
+                ))}
+              </Box>
+            </Paper>
+          ))}
+          {!schedule.length && <Alert severity="info">还没有场次，点击右上角“新增场景”开始排期，新场次默认排在最后一个拍摄日。</Alert>}
+        </Stack>
+      </Box>
+    )
+  }
+
   function renderSceneDetail() {
     if (!selectedScene) return null
     const sceneWarnings = warnings.filter((warning) => warning.sceneId === selectedScene.id)
@@ -221,6 +308,7 @@ export default function App() {
             <Stack direction="row" gap={1} mt={1} flexWrap="wrap">
               <Chip label={`${sceneWarnings.length} 条检查`} color={sceneWarnings.length ? 'warning' : 'success'} size="small" />
               <Chip label={`${selectedScene.pageLength.toFixed(2)} 页`} size="small" variant="outlined" />
+              <Chip label={`第 ${selectedScene.shootDay} 拍摄日`} size="small" color="primary" />
               <Chip label={selectedScene.storyTime} size="small" variant="outlined" />
               {locked && <Chip icon={<Block />} label="场景已锁定" size="small" />}
             </Stack>
@@ -252,6 +340,7 @@ export default function App() {
             </TextField>
             <TextField label="故事时间" value={selectedScene.storyTime} disabled={locked} onChange={(event) => store.updateScene(selectedScene.id, 'storyTime', event.target.value)} />
             <TextField type="number" label="页数" value={selectedScene.pageLength} disabled={locked} inputProps={{ step: 0.25, min: 0 }} onChange={(event) => store.updateScene(selectedScene.id, 'pageLength', Number(event.target.value))} />
+            <TextField type="number" label="拍摄日" value={selectedScene.shootDay} disabled={locked} inputProps={{ step: 1, min: 1 }} onChange={(event) => store.setShootDay(selectedScene.id, Number(event.target.value))} />
             <TextField select label="场次状态" value={selectedScene.status} disabled={locked} onChange={(event) => store.updateScene(selectedScene.id, 'status', event.target.value as Scene['status'])}>
               <MenuItem value="draft">草稿</MenuItem>
               <MenuItem value="review">待审</MenuItem>
@@ -499,7 +588,8 @@ export default function App() {
 
       <Box className="status-strip">
         <span>{store.saveStatus === 'saved' ? '● 已保存到本机' : '◌ 正在保存'}</span>
-        <span>{state.script.scenes.length} 场 / {state.script.scenes.reduce((total, scene) => total + scene.pageLength, 0).toFixed(2)} 页</span>
+        <span>{state.script.scenes.length} 场 / {totalPages.toFixed(2)} 页</span>
+        <span>{schedule.length} 个拍摄日{schedule.some((day) => day.overPages) ? ` · ${schedule.filter((day) => day.overPages).length} 天超 8 页` : ''}{schedule.some((day) => day.locationChange) ? ` · ${schedule.filter((day) => day.locationChange).length} 天转场` : ''}</span>
         <span className={pendingWarnings.length ? 'attention' : ''}>{pendingWarnings.length} 条问题待审</span>
         <span>所有修改自动保存在浏览器本地</span>
       </Box>
@@ -524,6 +614,7 @@ export default function App() {
 
       <Tabs value={view} onChange={(_, value) => setView(value)} variant="scrollable" className="view-tabs">
         <Tab value="outline" label="大纲视图" />
+        <Tab value="schedule" label={<Badge badgeContent={schedule.filter((day) => day.locationChange || day.overPages).length} color="warning"><span className="tab-label">通告单</span></Badge>} />
         <Tab value="detail" label="场景详情" />
         <Tab value="warnings" label={<Badge badgeContent={pendingWarnings.length} color="warning"><span className="tab-label">警告审阅</span></Badge>} />
         <Tab value="versions" label={<Badge badgeContent={state.versions.length} color="secondary"><span className="tab-label">版本差异</span></Badge>} />
@@ -548,6 +639,7 @@ export default function App() {
           </Paper>
         )}
         {view === 'outline' && renderOutline()}
+        {view === 'schedule' && renderSchedule()}
         {view === 'detail' && renderSceneDetail()}
         {view === 'warnings' && renderWarnings()}
         {view === 'versions' && renderVersions()}

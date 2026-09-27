@@ -36,6 +36,7 @@ export interface Scene {
   dayNight: string
   storyTime: string
   pageLength: number
+  shootDay: number
   characterIds: string[]
   propIds: string[]
   costumes: Record<string, string>
@@ -96,4 +97,15 @@ export interface DiffItem {
   field: string
   before: string
   after: string
+}
+
+export interface ScheduleDay {
+  day: number
+  scenes: Scene[]
+  locations: string[]
+  dayNights: string[]
+  sceneCount: number
+  totalPages: number
+  locationChange: boolean
+  overPages: boolean
 }

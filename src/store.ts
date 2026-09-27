@@ -1,22 +1,71 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { sampleScript } from './sample'
-import type { Character, ContinuityState, DiffItem, Prop, Reply, Scene, Script, Version, Wardrobe, WarningItem, WarningReview } from './types'
+import type { Character, ContinuityState, DiffItem, Prop, Reply, Scene, ScheduleDay, Script, Version, Wardrobe, WarningItem, WarningReview } from './types'
 
 const STORAGE_KEY = 'sologsb-1017-continuity-v1'
+const PAGE_LIMIT = 8
 const clone = <T,>(value: T): T => structuredClone(value)
 const id = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+
+function normalizeScript(script: Script): Script {
+  script.scenes.forEach((scene) => {
+    if (!Number.isFinite(scene.shootDay) || scene.shootDay < 1) scene.shootDay = 1
+    scene.shootDay = Math.floor(scene.shootDay)
+  })
+  return script
+}
 
 function initialState(): ContinuityState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as ContinuityState
-      if (parsed.script?.scenes?.length) return parsed
+      if (parsed.script?.scenes?.length) {
+        normalizeScript(parsed.script)
+        return parsed
+      }
     }
   } catch {
     // Ignore an invalid local draft and restore the bundled example.
   }
   return { script: clone(sampleScript), reviews: {}, versions: [], updatedAt: new Date().toISOString() }
+}
+
+export function compareSceneNumber(a: string, b: string): number {
+  const na = a.match(/\d+/)
+  const nb = b.match(/\d+/)
+  const ia = na ? Number(na[0]) : NaN
+  const ib = nb ? Number(nb[0]) : NaN
+  if (Number.isNaN(ia) && Number.isNaN(ib)) return a.localeCompare(b)
+  if (Number.isNaN(ia)) return 1
+  if (Number.isNaN(ib)) return -1
+  if (ia !== ib) return ia - ib
+  return a.localeCompare(b)
+}
+
+export function buildSchedule(script: Script): ScheduleDay[] {
+  const days = new Map<number, Scene[]>()
+  script.scenes.forEach((scene) => {
+    const list = days.get(scene.shootDay)
+    if (list) list.push(scene)
+    else days.set(scene.shootDay, [scene])
+  })
+  return [...days.keys()].sort((a, b) => a - b).map((day) => {
+    const scenes = [...(days.get(day) ?? [])].sort((a, b) => compareSceneNumber(a.number, b.number))
+    const locations = [...new Set(scenes.map((scene) => scene.location))]
+    const dayNights = [...new Set(scenes.map((scene) => scene.dayNight))]
+    const totalPages = Number(scenes.reduce((total, scene) => total + scene.pageLength, 0).toFixed(2))
+    return {
+      day,
+      scenes,
+      locations,
+      dayNights,
+      sceneCount: scenes.length,
+      totalPages,
+      locationChange: locations.length > 1,
+      overPages: totalPages > PAGE_LIMIT
+    }
+  })
 }
 
 export function deriveWarnings(script: Script): WarningItem[] {
@@ -108,6 +157,7 @@ export function diffScript(base: Script, current: Script): DiffItem[] {
     { key: 'dayNight', label: '日夜' },
     { key: 'storyTime', label: '故事时间' },
     { key: 'pageLength', label: '页数' },
+    { key: 'shootDay', label: '拍摄日' },
     { key: 'revision', label: '修订色' },
     { key: 'status', label: '状态' },
     { key: 'reason', label: '修改理由' }
@@ -224,12 +274,21 @@ export function useContinuityStore() {
     const sceneId = id('scene')
     mutate((script) => {
       const number = String(script.scenes.length + 1)
+      const shootDay = script.scenes.reduce((max, scene) => Math.max(max, scene.shootDay), 0) || 1
       script.scenes.push({
-        id: sceneId, number, slug: '未命名场景', synopsis: '', intExt: 'INT', location: '待填写', dayNight: '白天', storyTime: `第 1 天`, pageLength: 1,
+        id: sceneId, number, slug: '未命名场景', synopsis: '', intExt: 'INT', location: '待填写', dayNight: '白天', storyTime: `第 1 天`, pageLength: 1, shootDay,
         characterIds: [], propIds: [], costumes: {}, revision: 'white', status: 'draft', reason: ''
       })
     })
     return sceneId
+  }, [mutate])
+
+  const setShootDay = useCallback((sceneId: string, day: number) => {
+    mutate((script) => {
+      const scene = script.scenes.find((item) => item.id === sceneId)
+      if (!scene) return
+      scene.shootDay = Math.max(1, Math.floor(day) || 1)
+    })
   }, [mutate])
 
   const deleteScene = useCallback((sceneId: string) => {
@@ -334,6 +393,7 @@ export function useContinuityStore() {
     moveScene,
     addScene,
     deleteScene,
+    setShootDay,
     addCharacter,
     updateCharacter,
     addProp,
